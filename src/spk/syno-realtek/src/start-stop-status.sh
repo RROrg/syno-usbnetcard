@@ -37,29 +37,70 @@ start_daemon() {
             date >>${LOG_FILE}
         fi
     fi
+    
     call_func "service_prestart"
-    echo -ne " $!" >>${PID_FILE}
+    
+    # Create a dummy background process for this service
+    # Since this is a kernel module service, we just mark it as started
+    echo $$ >"${PID_FILE}"
 }
 
 stop_daemon() {
-
+    # Call prestop function if available
+    call_func "service_prestop"
+    
+    # Check if PID file exists and process is running
     if [ -f "${PID_FILE}" ]; then
-        rm -f "${PID_FILE}" >/dev/null
+        pid=$(cat "${PID_FILE}" 2>/dev/null)
+        if [ -n "${pid}" ] && echo "${pid}" | grep -E '^[0-9]+$' >/dev/null 2>&1; then
+            # Try to gracefully terminate the process
+            if kill -0 "${pid}" 2>/dev/null; then
+                kill "${pid}" 2>/dev/null
+                # Wait for process to terminate
+                sleep 1
+                # Force kill if still running
+                if kill -0 "${pid}" 2>/dev/null; then
+                    kill -9 "${pid}" 2>/dev/null
+                fi
+            fi
+        fi
+        rm -f "${PID_FILE}" >/dev/null 2>&1
     fi
+    
     call_func "service_poststop"
 }
 
 #------------------------------------------------------
 # daemon_status()
 #     $1: PID to check, if empty use ${PID_FILE}
-# status: Keeps track of kill -0 exit status
+# status: Checks if the service is running by verifying PID file and process
 #
-# Return 0 when all pid are OK, else return 1
+# Return 0 when service is running, else return 1
 #------------------------------------------------------
 daemon_status() {
-    if [ -f "${PID_FILE}" ]; then
+    check_pid="$1"
+    
+    # If no PID provided, check PID file
+    if [ -z "${check_pid}" ]; then
+        if [ ! -f "${PID_FILE}" ]; then
+            return 1
+        fi
+        check_pid=$(cat "${PID_FILE}" 2>/dev/null)
+    fi
+    
+    # Validate PID format
+    if [ -z "${check_pid}" ] || ! echo "${check_pid}" | grep -E '^[0-9]+$' >/dev/null 2>&1; then
+        # Invalid PID, clean up PID file if it exists
+        [ -f "${PID_FILE}" ] && rm -f "${PID_FILE}"
+        return 1
+    fi
+    
+    # Check if process is actually running
+    if kill -0 "${check_pid}" 2>/dev/null; then
         return 0
     else
+        # Process not running, clean up PID file
+        [ -f "${PID_FILE}" ] && rm -f "${PID_FILE}"
         return 1
     fi
 }
